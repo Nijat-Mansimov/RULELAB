@@ -6,6 +6,7 @@ const speakeasy = require("speakeasy");
 const QRCode = require("qrcode");
 const mongoose = require("mongoose");
 const userController = require("../controllers/userController");
+const analyticsController = require("../controllers/analyticsController");
 const { authenticate, hasRole } = require("../middleware/auth");
 
 const validate = (req, res, next) => {
@@ -377,6 +378,20 @@ router.get("/stats", authenticate, userController.getUserStats);
  * @access  Private
  */
 router.get("/my-rules", authenticate, userController.getUserRules);
+
+/**
+ * @route   GET /api/v1/users/analytics/downloads-views
+ * @desc    Get user's downloads and views analytics by time period
+ * @access  Private
+ */
+router.get("/analytics/downloads-views", authenticate, analyticsController.getUserDownloadsViewsAnalytics);
+
+/**
+ * @route   GET /api/v1/users/analytics/rule-reviews
+ * @desc    Get all reviews/comments on user's rules
+ * @access  Private
+ */
+router.get("/analytics/rule-reviews", authenticate, analyticsController.getUserRuleReviews);
 
 /**
  * @route   GET /api/v1/users/:username/rules

@@ -98,9 +98,27 @@ exports.getUserById = asyncHandler(async (req, res) => {
 
   // Get user's public stats
   const rulesCreated = await Rule.countDocuments({
-    creator: user._id,
-    status: "PUBLISHED",
+    author: user._id,
   });
+
+  // Calculate average rating from all reviews on user's rules
+  const userRules = await Rule.find({
+    author: user._id,
+  }).select('_id');
+
+  let averageRating = 0;
+  if (userRules.length > 0) {
+    const ruleIds = userRules.map(rule => rule._id);
+    const reviews = await Review.find({
+      rule: { $in: ruleIds },
+      isActive: true,
+    }).select('rating');
+
+    if (reviews.length > 0) {
+      const totalRating = reviews.reduce((sum, review) => sum + (review.rating || 0), 0);
+      averageRating = parseFloat((totalRating / reviews.length).toFixed(1));
+    }
+  }
 
   res.json({
     success: true,
@@ -108,6 +126,10 @@ exports.getUserById = asyncHandler(async (req, res) => {
       user: {
         ...user.toObject(),
         rulesCreated,
+        statistics: {
+          ...user.statistics,
+          rating: averageRating,
+        },
       },
     },
   });

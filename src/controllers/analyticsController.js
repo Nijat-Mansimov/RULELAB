@@ -689,3 +689,155 @@ function convertToCSV(data) {
 
   return csv.join("\n");
 }
+
+/**
+ * Get user's downloads and views analytics by time period
+ */
+exports.getUserDownloadsViewsAnalytics = asyncHandler(async (req, res) => {
+  const { period = 'monthly' } = req.query;
+
+  // Get user's rules
+  const userRules = await Rule.find({
+    author: req.user._id,
+  }).select('statistics createdAt');
+
+  if (userRules.length === 0) {
+    return res.json({
+      success: true,
+      data: {
+        analytics: [],
+      },
+    });
+  }
+
+  let analytics = [];
+  const today = new Date();
+
+  if (period === 'daily') {
+    // Last 30 days with daily breakdown
+    const dailyStats = {};
+    
+    for (let i = 29; i >= 0; i--) {
+      const date = new Date(today);
+      date.setDate(date.getDate() - i);
+      const dateKey = date.toISOString().split('T')[0];
+      dailyStats[dateKey] = { downloads: 0, views: 0 };
+    }
+
+    userRules.forEach((rule) => {
+      const ruleDate = new Date(rule.createdAt).toISOString().split('T')[0];
+      if (dailyStats[ruleDate]) {
+        dailyStats[ruleDate].downloads += rule.statistics?.downloads || 0;
+        dailyStats[ruleDate].views += rule.statistics?.views || 0;
+      }
+    });
+
+    analytics = Object.entries(dailyStats).map(([date, stats]) => {
+      const d = new Date(date);
+      return {
+        name: d.toLocaleString('default', { month: 'short', day: 'numeric' }),
+        downloads: stats.downloads,
+        views: stats.views,
+      };
+    });
+
+  } else if (period === 'weekly') {
+    // Last 12 weeks with weekly breakdown
+    const weeklyStats = {};
+    
+    for (let i = 11; i >= 0; i--) {
+      weeklyStats[i] = { downloads: 0, views: 0 };
+    }
+
+    userRules.forEach((rule) => {
+      const ruleDate = new Date(rule.createdAt);
+      const daysDiff = Math.floor((today.getTime() - ruleDate.getTime()) / (1000 * 60 * 60 * 24));
+      const weekIndex = Math.floor(daysDiff / 7);
+      
+      if (weekIndex >= 0 && weekIndex < 12) {
+        weeklyStats[11 - weekIndex].downloads += rule.statistics?.downloads || 0;
+        weeklyStats[11 - weekIndex].views += rule.statistics?.views || 0;
+      }
+    });
+
+    analytics = Object.entries(weeklyStats).map(([week, stats]) => ({
+      name: `W${parseInt(week) + 1}`,
+      downloads: stats.downloads,
+      views: stats.views,
+    }));
+
+  } else {
+    // monthly (default)
+    const monthlyStats = {};
+    
+    for (let i = 5; i >= 0; i--) {
+      monthlyStats[i] = { downloads: 0, views: 0 };
+    }
+
+    userRules.forEach((rule) => {
+      const ruleDate = new Date(rule.createdAt);
+      const monthsDiff = 
+        (today.getFullYear() - ruleDate.getFullYear()) * 12 +
+        (today.getMonth() - ruleDate.getMonth());
+      
+      if (monthsDiff >= 0 && monthsDiff < 6) {
+        monthlyStats[5 - monthsDiff].downloads += rule.statistics?.downloads || 0;
+        monthlyStats[5 - monthsDiff].views += rule.statistics?.views || 0;
+      }
+    });
+
+    analytics = Object.entries(monthlyStats).map(([month, stats]) => {
+      const d = new Date(today);
+      d.setMonth(d.getMonth() - (5 - parseInt(month)));
+      return {
+        name: d.toLocaleString('default', { month: 'short' }),
+        downloads: stats.downloads,
+        views: stats.views,
+      };
+    });
+  }
+
+  res.json({
+    success: true,
+    data: {
+      analytics,
+    },
+  });
+});
+
+/**
+ * Get all reviews for user's rules
+ */
+exports.getUserRuleReviews = asyncHandler(async (req, res) => {
+  // Get user's rules
+  const userRules = await Rule.find({
+    author: req.user._id,
+  }).select('_id');
+
+  if (userRules.length === 0) {
+    return res.json({
+      success: true,
+      data: {
+        reviews: [],
+      },
+    });
+  }
+
+  const ruleIds = userRules.map(rule => rule._id);
+
+  // Get all reviews for these rules
+  const reviews = await Review.find({
+    rule: { $in: ruleIds },
+    isActive: true,
+  })
+    .select('rating comment user rule createdAt helpful')
+    .populate('user', 'username avatar profile')
+    .sort({ createdAt: -1 });
+
+  res.json({
+    success: true,
+    data: {
+      reviews,
+    },
+  });
+});
