@@ -399,4 +399,11 @@ router.post("/:id/purchase", authenticate, ruleController.purchaseRule);
  */
 router.post("/:id/like", authenticate, ruleController.likeRule);
 
+/**
+ * @route   GET /api/v1/rules/:id/analytics
+ * @desc    Get rule analytics (downloads, views, earnings)
+ * @access  Private (owner or admin)
+ */
+router.get("/:id/analytics", authenticate, ruleController.getRuleAnalytics);
+
 module.exports = router;

@@ -72,8 +72,10 @@ app.use("/api/v1/auth", require("./routes/authRoutes"));
 app.use("/api/v1/users", require("./routes/userRoutes"));
 app.use("/api/v1/rules", require("./routes/ruleRoutes"));
 app.use("/api/v1/transactions", require("./routes/transactionRoutes"));
+app.use("/api/v1/billing", require("./routes/billingRoutes"));
 app.use("/api/v1/reviews", require("./routes/reviewRoutes"));
 app.use("/api/v1/admin", require("./routes/adminRoutes"));
+app.use("/api/v1/moderation", require("./routes/moderationRoutes"));
 
 // Initialize WebSocket service for real-time notifications
 const socketService = new SocketService(server);

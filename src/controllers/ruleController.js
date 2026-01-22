@@ -106,12 +106,20 @@ exports.getRules = async (req, res) => {
       isActive: true,
     };
 
-    // Only show public rules unless user is authenticated
+    // Show public and paid rules to all users
+    // Users can see their own rules regardless of visibility
     if (!req.user) {
-      filter.visibility = "PUBLIC";
+      // Non-authenticated users see PUBLIC and PAID rules
+      filter.$or = [{ visibility: "PUBLIC" }, { visibility: "PAID" }];
     } else {
-      // Show user's own rules + public rules
-      filter.$or = [{ visibility: "PUBLIC" }, { author: req.user._id }];
+      // Authenticated users see:
+      // - All PUBLIC and PAID rules
+      // - Their own rules (regardless of visibility)
+      filter.$or = [
+        { visibility: "PUBLIC" },
+        { visibility: "PAID" },
+        { author: req.user._id }
+      ];
     }
 
     // Apply filters
@@ -344,6 +352,7 @@ exports.updateRule = async (req, res) => {
 
     // Update other fields
     Object.assign(rule, updates);
+    
     await rule.save();
 
     // Log activity
@@ -370,8 +379,8 @@ exports.updateRule = async (req, res) => {
   }
 };
 
-// Publish rule
-exports.publishRule = async (req, res) => {
+// Direct publish rule (for VERIFIED_CONTRIBUTOR/ADMIN)
+exports.directPublishRule = async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -782,6 +791,136 @@ exports.likeRule = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to like rule",
+      error: error.message,
+    });
+  }
+};
+
+// Publish rule (VERIFIED_CONTRIBUTOR only)
+// Publish rule with visibility and pricing
+exports.publishRule = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { visibility, pricing } = req.body;
+
+    const rule = await Rule.findById(id).populate("author");
+
+    if (!rule) {
+      return res.status(404).json({
+        success: false,
+        message: "Rule not found",
+      });
+    }
+
+    // Check ownership or admin BEFORE any modifications
+    if (
+      rule.author._id.toString() !== req.user._id.toString() &&
+      req.user.role !== "ADMIN"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to publish this rule",
+      });
+    }
+
+    // Check status BEFORE any modifications
+    if (rule.status !== "DRAFT") {
+      return res.status(400).json({
+        success: false,
+        message: "Only draft rules can be published",
+      });
+    }
+
+    // NOW we can proceed with modifications
+    rule.status = "UNDER_REVIEW";
+    rule.visibility = visibility || "PUBLIC";
+    if (pricing) {
+      rule.pricing = pricing;
+    }
+
+    await rule.save();
+
+    // Log activity
+    await Activity.create({
+      user: req.user._id,
+      type: "RULE_SUBMITTED_FOR_REVIEW",
+      target: rule._id,
+      targetModel: "Rule",
+      ipAddress: req.ip,
+      userAgent: req.get("user-agent"),
+    });
+
+    // Create notification for moderators
+    const Notification = require("../models/Notification");
+    await Notification.create({
+      type: "RULE_SUBMITTED",
+      title: "New Rule Submitted for Review",
+      message: `A new rule "${rule.title}" by @${rule.author.username} has been submitted for review.`,
+      data: { ruleId: rule._id },
+    });
+
+    res.json({
+      success: true,
+      message: "Rule submitted for review successfully",
+      data: { rule },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to submit rule for review",
+      error: error.message,
+    });
+  }
+};
+
+// Get rule analytics (for owner or admin)
+exports.getRuleAnalytics = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const rule = await Rule.findById(id).populate("author");
+
+    if (!rule) {
+      return res.status(404).json({
+        success: false,
+        message: "Rule not found",
+      });
+    }
+
+    // Check ownership or admin
+    if (
+      rule.author._id.toString() !== req.user._id.toString() &&
+      req.user.role !== "ADMIN"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to view analytics",
+      });
+    }
+
+    // Calculate earnings (simplified: downloads * price * 0.1)
+    const purchases = await Purchase.countDocuments({ rule: id });
+    const earnings = purchases * (rule.pricing?.price || 0) * 0.1;
+
+    const analytics = {
+      downloads: rule.statistics?.downloads || 0,
+      views: rule.statistics?.views || 0,
+      rating: rule.statistics?.rating || 0,
+      totalRatings: rule.statistics?.totalRatings || 0,
+      likes: rule.statistics?.likes || 0,
+      forks: rule.statistics?.forks || 0,
+      purchases,
+      earnings,
+    };
+
+    res.json({
+      success: true,
+      data: { analytics },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to get analytics",
       error: error.message,
     });
   }

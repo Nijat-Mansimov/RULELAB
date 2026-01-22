@@ -4,6 +4,7 @@ const router = express.Router();
 const { body, validationResult } = require("express-validator");
 const speakeasy = require("speakeasy");
 const QRCode = require("qrcode");
+const mongoose = require("mongoose");
 const userController = require("../controllers/userController");
 const { authenticate, hasRole } = require("../middleware/auth");
 
@@ -364,11 +365,18 @@ router.post(
 );
 
 /**
- * @route   GET /api/v1/users/:username
- * @desc    Get public user profile
- * @access  Public
+ * @route   GET /api/v1/users/stats
+ * @desc    Get current user's statistics (rules created, earnings, etc.)
+ * @access  Private
  */
-router.get("/:username", userController.getUserProfile);
+router.get("/stats", authenticate, userController.getUserStats);
+
+/**
+ * @route   GET /api/v1/users/my-rules
+ * @desc    Get current user's created rules
+ * @access  Private
+ */
+router.get("/my-rules", authenticate, userController.getUserRules);
 
 /**
  * @route   GET /api/v1/users/:username/rules
@@ -379,5 +387,23 @@ router.get(
   "/:username/rules",
   userController.getUserRules,
 );
+
+/**
+ * @route   GET /api/v1/users/:id
+ * @desc    Get public user profile by ID or username
+ * @access  Public
+ * Note: This route MUST be last to avoid conflicting with other routes
+ */
+router.get("/:id", (req, res, next) => {
+  // Check if the id is a valid MongoDB ObjectId
+  if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+    // It's a valid ObjectId, use getUserById
+    userController.getUserById(req, res, next);
+  } else {
+    // It's not an ObjectId, treat it as a username
+    req.params.username = req.params.id;
+    userController.getUserProfile(req, res, next);
+  }
+});
 
 module.exports = router;

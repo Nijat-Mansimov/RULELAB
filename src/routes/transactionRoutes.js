@@ -37,6 +37,13 @@ router.get(
 router.get("/my", authenticate, transactionController.getMyTransactions);
 
 /**
+ * @route   GET /api/v1/transactions/earnings
+ * @desc    Get current user's earnings breakdown
+ * @access  Private
+ */
+router.get("/earnings", authenticate, transactionController.getMyEarnings);
+
+/**
  * @route   GET /api/v1/transactions/stats/platform
  * @desc    Get platform revenue statistics (admin only)
  * @access  Private (Admin)
@@ -73,6 +80,22 @@ router.post(
   ],
   validate,
   transactionController.purchaseRule,
+);
+
+/**
+ * @route   POST /api/v1/transactions/withdraw
+ * @desc    Request withdrawal/payout
+ * @access  Private
+ */
+router.post(
+  "/withdraw",
+  authenticate,
+  [
+    body("amount").isFloat({ min: 1 }).withMessage("Amount must be at least $1"),
+    body("paymentMethod").isIn(["stripe", "bank"]).withMessage("Invalid payment method"),
+  ],
+  validate,
+  transactionController.requestWithdrawal,
 );
 
 /**

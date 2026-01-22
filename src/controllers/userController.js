@@ -1,6 +1,7 @@
 // src/controllers/userController.js
 const User = require("../models/User");
 const Rule = require("../models/Rule");
+const Review = require("../models/Review");
 const Activity = require("../models/Activity");
 const Transaction = require("../models/Transaction");
 const Notification = require("../models/Notification");
@@ -57,6 +58,37 @@ exports.getUserProfile = asyncHandler(async (req, res) => {
   const { username } = req.params;
 
   const user = await User.findOne({ username }).select(
+    "username profile statistics createdAt role",
+  );
+
+  if (!user) {
+    throw errors.notFound("User not found");
+  }
+
+  // Get user's public stats
+  const rulesCreated = await Rule.countDocuments({
+    creator: user._id,
+    status: "PUBLISHED",
+  });
+
+  res.json({
+    success: true,
+    data: {
+      user: {
+        ...user.toObject(),
+        rulesCreated,
+      },
+    },
+  });
+});
+
+/**
+ * Get user by ID
+ */
+exports.getUserById = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const user = await User.findById(id).select(
     "username profile statistics createdAt role",
   );
 
@@ -429,9 +461,47 @@ exports.searchUsers = asyncHandler(async (req, res) => {
     .limit(parseInt(limit))
     .lean();
 
+  // Enhance each user with actual published rules count and average rating
+  const usersWithStats = await Promise.all(
+    users.map(async (user) => {
+      const rulesPublished = await Rule.countDocuments({
+        author: user._id,
+        visibility: "PUBLIC",
+        status: { $in: ["APPROVED", "UNDER_REVIEW"] },
+      });
+
+      // Calculate average rating from all user's public rules (approved or under review)
+      const rulesData = await Rule.find({
+        author: user._id,
+        visibility: "PUBLIC",
+        status: { $in: ["APPROVED", "UNDER_REVIEW"] },
+      }).select("statistics");
+
+      let averageRating = 0;
+      if (rulesData.length > 0) {
+        const totalRating = rulesData.reduce(
+          (sum, rule) => sum + (rule.statistics?.rating || 0),
+          0
+        );
+        averageRating = totalRating / rulesData.length;
+      }
+
+      return {
+        _id: user._id,
+        username: user.username,
+        profile: user.profile,
+        avatar: user.avatar,
+        stats: {
+          rulesPublished,
+          averageRating: parseFloat(averageRating.toFixed(1)),
+        },
+      };
+    }),
+  );
+
   res.json({
     success: true,
-    data: { users },
+    data: { users: usersWithStats },
   });
 });
 
@@ -447,14 +517,13 @@ exports.getUserStats = asyncHandler(async (req, res) => {
 
   // Count rules created
   const rulesCreated = await Rule.countDocuments({
-    creator: req.user._id,
-    status: "PUBLISHED",
+    author: req.user._id,
   });
 
   // Count reviews written
-  const reviewsWritten = await Rule.countDocuments({
-    creator: req.user._id,
-  }); // Placeholder - should count from Review model
+  const reviewsWritten = await Review.countDocuments({
+    author: req.user._id,
+  });
 
   // Get total earnings
   const earnings = await Transaction.aggregate([
@@ -481,5 +550,21 @@ exports.getUserStats = asyncHandler(async (req, res) => {
       totalEarnings: earnings[0]?.total || 0,
       totalTransactions: earnings[0]?.count || 0,
     },
+  });
+});
+
+/**
+ * Get current user's rules
+ */
+exports.getUserRules = asyncHandler(async (req, res) => {
+  const rules = await Rule.find({
+    author: req.user._id,
+  })
+    .select("title description category severity status downloads rating statistics createdAt mitreAttack")
+    .sort({ createdAt: -1 });
+
+  res.json({
+    success: true,
+    data: { rules },
   });
 });

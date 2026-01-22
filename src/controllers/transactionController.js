@@ -5,6 +5,7 @@ const Rule = require("../models/Rule");
 const User = require("../models/User");
 const Notification = require("../models/Notification");
 const { asyncHandler, errors } = require("../middleware/errorHandler");
+const billingService = require("../services/billingService");
 const crypto = require("crypto");
 
 /**
@@ -151,7 +152,7 @@ exports.purchaseRule = asyncHandler(async (req, res) => {
   }
 
   const amount = rule.pricing.amount;
-  const platformFeePercent = 0.1; // 10% platform fee
+  const platformFeePercent = 0.1; // 10% platform fee (admin commission)
   const platformFee = amount * platformFeePercent;
   const sellerEarnings = amount - platformFee;
 
@@ -162,8 +163,8 @@ exports.purchaseRule = asyncHandler(async (req, res) => {
     rule: ruleId,
     amount,
     currency: "USD",
-    paymentMethod: "STRIPE", // Placeholder
-    status: "COMPLETED", // Placeholder - in real app, would wait for payment
+    paymentMethod: "MOCK", // Using MOCK for simulated payment
+    status: "COMPLETED", // Simulated - in production would wait for actual payment
     paymentIntentId: paymentMethodId || crypto.randomBytes(16).toString("hex"),
     platformFee,
     sellerEarnings,
@@ -191,6 +192,34 @@ exports.purchaseRule = asyncHandler(async (req, res) => {
   rule.stats.revenue = (rule.stats.revenue || 0) + amount;
   await rule.save();
 
+  // DISTRIBUTE EARNINGS: Credit admin commission and seller earnings to their billing accounts
+  try {
+    const distributionResult = await billingService.distributePurchaseEarnings({
+      purchaseId: purchase._id,
+      transactionId: transaction._id,
+      sellerId: rule.creator._id,
+      amount: amount,
+    });
+
+    // Log the distribution result for debugging
+    console.log("✅ Earnings distributed successfully:", distributionResult);
+
+    // Add distribution info to transaction metadata
+    transaction.metadata = {
+      ...transaction.metadata,
+      billingDistribution: {
+        adminCommission: distributionResult.distribution.adminCommission,
+        sellerEarnings: distributionResult.distribution.sellerEarnings,
+        distributedAt: new Date(),
+      },
+    };
+    await transaction.save();
+  } catch (billingError) {
+    console.error("❌ Error distributing earnings:", billingError);
+    // Don't fail the purchase if billing distribution fails (can be retried)
+    // But log it for admin investigation
+  }
+
   // Create notification for seller
   await Notification.create({
     recipient: rule.creator,
@@ -201,6 +230,7 @@ exports.purchaseRule = asyncHandler(async (req, res) => {
       transactionId: transaction._id,
       ruleId: rule._id,
       buyerId: req.user._id,
+      earnings: sellerEarnings,
     },
     actionUrl: `/transactions/${transaction._id}`,
   });
@@ -474,3 +504,152 @@ exports.getPlatformStats = asyncHandler(async (req, res) => {
     },
   });
 });
+
+/**
+ * Get user earnings breakdown
+ */
+exports.getMyEarnings = asyncHandler(async (req, res) => {
+  const { period = "all" } = req.query;
+  const userId = req.user._id;
+
+  // Determine date filter
+  const dateFilter = {};
+  if (period === "month") {
+    dateFilter.$gte = new Date(new Date().setMonth(new Date().getMonth() - 1));
+  } else if (period === "quarter") {
+    dateFilter.$gte = new Date(new Date().setMonth(new Date().getMonth() - 3));
+  } else if (period === "year") {
+    dateFilter.$gte = new Date(new Date().setFullYear(new Date().getFullYear() - 1));
+  }
+
+  // Get earnings from rule purchases
+  const earnings = await Transaction.aggregate([
+    {
+      $match: {
+        seller: userId,
+        status: "COMPLETED",
+        ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: "$sellerEarnings" },
+      },
+    },
+  ]);
+
+  const total = earnings[0]?.total || 0;
+
+  // Get breakdown by month
+  const breakdown = await Transaction.aggregate([
+    {
+      $match: {
+        seller: userId,
+        status: "COMPLETED",
+      },
+    },
+    {
+      $group: {
+        _id: {
+          year: { $year: "$createdAt" },
+          month: { $month: "$createdAt" },
+        },
+        amount: { $sum: "$sellerEarnings" },
+      },
+    },
+    {
+      $sort: { "_id.year": -1, "_id.month": -1 },
+    },
+    {
+      $limit: 12,
+    },
+  ]);
+
+  res.json({
+    success: true,
+    data: {
+      total,
+      breakdown: breakdown.map(item => ({
+        date: `${item._id.year}-${String(item._id.month).padStart(2, "0")}`,
+        amount: item.amount,
+      })),
+    },
+  });
+});
+
+/**
+ * Request withdrawal (payout)
+ */
+exports.requestWithdrawal = asyncHandler(async (req, res) => {
+  const { amount, paymentMethod } = req.body;
+  const userId = req.user._id;
+
+  // Validate amount
+  if (!amount || amount <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid amount",
+    });
+  }
+
+  // Check user balance
+  const earnings = await Transaction.aggregate([
+    {
+      $match: {
+        seller: userId,
+        status: "COMPLETED",
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: "$sellerEarnings" },
+      },
+    },
+  ]);
+
+  const availableBalance = earnings[0]?.total || 0;
+
+  if (amount > availableBalance) {
+    return res.status(400).json({
+      success: false,
+      message: "Insufficient balance",
+    });
+  }
+
+  // Create withdrawal transaction
+  const withdrawal = new Transaction({
+    buyer: null,
+    seller: userId,
+    rule: null,
+    type: "WITHDRAWAL",
+    amount,
+    paymentMethod,
+    platformFee: 0,
+    sellerEarnings: amount,
+    status: "PENDING",
+    description: `Withdrawal request for $${amount}`,
+  });
+
+  await withdrawal.save();
+
+  // Create notification
+  await Notification.create({
+    user: userId,
+    type: "WITHDRAWAL_REQUESTED",
+    title: "Withdrawal Requested",
+    message: `Your withdrawal request of $${amount} has been submitted for processing`,
+    data: { transactionId: withdrawal._id },
+  });
+
+  res.json({
+    success: true,
+    message: "Withdrawal request submitted",
+    data: {
+      transaction: withdrawal,
+    },
+  });
+});
+
+module.exports = exports;
